@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: dating-video-chat
+    env: node
+    plan: free
+    buildCommand: cd server && npm install
+    startCommand: cd server && npm start
+    envVars:
+      - key: NODE_ENV
+        value: production

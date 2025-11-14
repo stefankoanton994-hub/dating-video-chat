@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VideoChat Знакомства</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Экран выбора города -->
+        <div id="citySelection" class="screen active">
+            <div class="container">
+                <h1>🎥 VideoChat Знакомства</h1>
+                <div class="user-form">
+                    <input type="text" id="userName" placeholder="Ваше имя" maxlength="20">
+                    <input type="number" id="userAge" placeholder="Возраст" min="18" max="99">
+                    <select id="userGender">
+                        <option value="">Пол</option>
+                        <option value="male">Мужской</option>
+                        <option value="female">Женской</option>
+                    </select>
+                </div>
+                <div class="cities-grid" id="citiesGrid">
+                    <!-- Города загружаются через JavaScript -->
+                </div>
+                <div id="formError" class="error"></div>
+            </div>
+        </div>
+
+        <!-- Экран ожидания -->
+        <div id="waitingScreen" class="screen">
+            <div class="container">
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <h2>Ищем партнера...</h2>
+                    <p>Ожидайте соединения</p>
+                    <div class="room-info">
+                        Пользователей онлайн в вашем городе: <span id="usersCount">0</span>
+                    </div>
+                    <button id="cancelSearch" class="btn-secondary">Отмена</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Экран видеочата -->
+        <div id="videoChat" class="screen">
+            <div class="video-container">
+                <div class="video-wrapper">
+                    <video id="localVideo" autoplay muted playsinline></video>
+                    <div class="video-label">Вы</div>
+                </div>
+                <div class="video-wrapper">
+                    <video id="remoteVideo" autoplay playsinline></video>
+                    <div class="video-label" id="partnerLabel">Партнер</div>
+                </div>
+            </div>
+
+            <div class="controls">
+                <button id="muteAudio" class="control-btn">🔇</button>
+                <button id="muteVideo" class="control-btn">📹</button>
+                <button id="nextPartner" class="control-btn next-btn">➡️ Следующий</button>
+                <button id="hangUp" class="control-btn hangup-btn">📞 Завершить</button>
+            </div>
+
+            <div class="chat-container">
+                <div class="chat-messages" id="chatMessages"></div>
+                <div class="chat-input">
+                    <input type="text" id="messageInput" placeholder="Введите сообщение...">
+                    <button id="sendMessage">Отправить</button>
+                </div>
+            </div>
+
+            <div class="partner-info">
+                <span id="partnerInfo">Ожидаем партнера...</span>
+            </div>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>
