@@ -15,41 +15,38 @@ const io = socketIo(server, {
 // Статические файлы
 app.use(express.static(path.join(__dirname, '../client')));
 
-// Данные о пользователях и комнатах
+// Добавьте корневой маршрут
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, '../client/index.html'));
+});
+
+// Данные о пользователях
 const users = new Map();
-const cityRooms = new Map();
 
 // Доступные города
 const availableCities = [
   'Москва', 'Санкт-Петербург', 'Новосибирск', 'Екатеринбург', 'Казань',
-  'Нижний Новгород', 'Челябинск', 'Самара', 'Омск', 'Ростов-на-Дону',
-  'Уфа', 'Красноярск', 'Воронеж', 'Пермь', 'Волгоград'
+  'Нижний Новгород', 'Челябинск', 'Самара', 'Омск', 'Ростов-на-Дону'
 ];
 
 io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
 
-  // Отправляем список городов новому пользователю
   socket.emit('cities-list', availableCities);
 
   socket.on('join-city', (data) => {
     const { city, userData } = data;
     
-    // Сохраняем данные пользователя
     users.set(socket.id, {
       ...userData,
       city: city,
-      socketId: socket.id
+      socketId: socket.id,
+      partnerId: null
     });
 
-    // Входим в комнату города
     socket.join(city);
     
-    // Получаем текущих пользователей в комнате
-    const roomUsers = Array.from(users.values())
-      .filter(user => user.city === city && user.socketId !== socket.id);
-
-    // Ищем партнера для соединения
+    // Ищем партнера
     const waitingUsers = Array.from(users.values())
       .filter(user => 
         user.city === city && 
@@ -58,12 +55,13 @@ io.on('connection', (socket) => {
       );
 
     if (waitingUsers.length > 0) {
-      // Нашли партнера - соединяем их
       const partner = waitingUsers[0];
-      partner.partnerId = socket.id;
+      
+      // Обновляем данные о партнерах
+      users.get(partner.socketId).partnerId = socket.id;
       users.get(socket.id).partnerId = partner.socketId;
 
-      // Уведомляем обоих пользователей
+      // Уведомляем пользователей
       socket.emit('partner-found', { 
         partnerId: partner.socketId,
         partnerData: {
@@ -82,19 +80,20 @@ io.on('connection', (socket) => {
         }
       });
 
-      console.log(`Matched users: ${socket.id} and ${partner.socketId} in ${city}`);
+      console.log(`Matched: ${socket.id} and ${partner.socketId} in ${city}`);
     } else {
-      // Ждем партнера
       socket.emit('waiting-for-partner');
       console.log(`User ${socket.id} waiting in ${city}`);
     }
 
-    // Обновляем список пользователей в комнате
-    socket.to(city).emit('users-in-room', roomUsers.length + 1);
+    // Обновляем счетчик пользователей
+    const roomUsers = Array.from(users.values()).filter(user => user.city === city);
+    io.to(city).emit('users-in-room', roomUsers.length);
   });
 
-  // Обработка WebRTC сигналов
+  // WebRTC signaling
   socket.on('webrtc-offer', (data) => {
+    console.log('Offer from', socket.id, 'to', data.target);
     socket.to(data.target).emit('webrtc-offer', {
       sdp: data.sdp,
       sender: socket.id
@@ -102,6 +101,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('webrtc-answer', (data) => {
+    console.log('Answer from', socket.id, 'to', data.target);
     socket.to(data.target).emit('webrtc-answer', {
       sdp: data.sdp,
       sender: socket.id
@@ -120,22 +120,20 @@ io.on('connection', (socket) => {
     const user = users.get(socket.id);
     if (user && user.partnerId) {
       const partnerId = user.partnerId;
-      const partner = users.get(partnerId);
       
-      if (partner) {
-        partner.partnerId = null;
-        socket.to(partnerId).emit('partner-disconnected');
-      }
+      // Уведомляем партнера
+      socket.to(partnerId).emit('partner-disconnected');
       
+      // Сбрасываем партнеров
+      users.get(partnerId).partnerId = null;
       user.partnerId = null;
       
       // Ищем нового партнера
-      socket.emit('waiting-for-partner');
       findNewPartner(socket.id, user.city);
     }
   });
 
-  // Отправка сообщения
+  // Сообщения чата
   socket.on('send-message', (data) => {
     const user = users.get(socket.id);
     if (user && user.partnerId) {
@@ -159,10 +157,11 @@ io.on('connection', (socket) => {
         }
       }
 
-      // Удаляем из комнаты
-      socket.to(user.city).emit('users-in-room', 
-        Array.from(users.values()).filter(u => u.city === user.city && u.socketId !== socket.id).length
-      );
+      // Обновляем счетчик в комнате
+      if (user.city) {
+        const roomUsers = Array.from(users.values()).filter(u => u.city === user.city && u.socketId !== socket.id);
+        socket.to(user.city).emit('users-in-room', roomUsers.length);
+      }
 
       users.delete(socket.id);
     }
@@ -171,19 +170,17 @@ io.on('connection', (socket) => {
 });
 
 function findNewPartner(userId, city) {
+  const user = users.get(userId);
+  if (!user) return;
+
   const waitingUsers = Array.from(users.values())
-    .filter(user => 
-      user.city === city && 
-      user.socketId !== userId && 
-      !user.partnerId
-    );
+    .filter(u => u.city === city && u.socketId !== userId && !u.partnerId);
 
   if (waitingUsers.length > 0) {
     const partner = waitingUsers[0];
-    const user = users.get(userId);
     
-    partner.partnerId = userId;
     user.partnerId = partner.socketId;
+    partner.partnerId = userId;
 
     const userSocket = io.sockets.sockets.get(userId);
     const partnerSocket = io.sockets.sockets.get(partner.socketId);
@@ -205,6 +202,8 @@ function findNewPartner(userId, city) {
         gender: user.gender
       }
     });
+  } else {
+    io.sockets.sockets.get(userId).emit('waiting-for-partner');
   }
 }
 

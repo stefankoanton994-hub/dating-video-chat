@@ -17,8 +17,13 @@ class VideoChatApp {
     }
 
     initializeSocket() {
-        this.socket = io();
+        // Подключаемся к серверу
+        this.socket = io(window.location.origin);
         
+        this.socket.on('connect', () => {
+            console.log('Connected to server:', this.socket.id);
+        });
+
         this.socket.on('cities-list', (cities) => {
             this.renderCities(cities);
         });
@@ -27,9 +32,10 @@ class VideoChatApp {
             this.showScreen('waitingScreen');
         });
 
-        this.socket.on('partner-found', (data) => {
-            this.partnerData = data.partnerData;
-            this.startVideoCall(data.partnerId);
+        this.socket.on('partner-found', async (data) => {
+            console.log('Partner found:', data);
+            this.partnerData = data;
+            await this.startVideoCall(data.partnerId);
         });
 
         this.socket.on('users-in-room', (count) => {
@@ -37,14 +43,17 @@ class VideoChatApp {
         });
 
         this.socket.on('webrtc-offer', async (data) => {
+            console.log('Received offer from:', data.sender);
             await this.handleOffer(data.sdp, data.sender);
         });
 
         this.socket.on('webrtc-answer', async (data) => {
+            console.log('Received answer from:', data.sender);
             await this.handleAnswer(data.sdp);
         });
 
         this.socket.on('ice-candidate', async (data) => {
+            console.log('Received ICE candidate from:', data.sender);
             await this.handleIceCandidate(data.candidate);
         });
 
@@ -58,21 +67,15 @@ class VideoChatApp {
     }
 
     setupEventListeners() {
-        // Кнопка отмены поиска
         document.getElementById('cancelSearch').addEventListener('click', () => {
-            this.showScreen('citySelection');
-            if (this.socket) {
-                this.socket.emit('leave-city');
-            }
+            this.hangUp();
         });
 
-        // Управление видео/аудио
         document.getElementById('muteAudio').addEventListener('click', this.toggleAudio.bind(this));
         document.getElementById('muteVideo').addEventListener('click', this.toggleVideo.bind(this));
         document.getElementById('nextPartner').addEventListener('click', this.nextPartner.bind(this));
         document.getElementById('hangUp').addEventListener('click', this.hangUp.bind(this));
 
-        // Чат
         document.getElementById('sendMessage').addEventListener('click', this.sendMessage.bind(this));
         document.getElementById('messageInput').addEventListener('keypress', (e) => {
             if (e.key === 'Enter') {
@@ -104,8 +107,8 @@ class VideoChatApp {
             return;
         }
 
-        if (age < 18) {
-            this.showError('Вам должно быть не менее 18 лет');
+        if (age < 18 || age > 99) {
+            this.showError('Вам должно быть от 18 до 99 лет');
             return;
         }
 
@@ -119,7 +122,7 @@ class VideoChatApp {
                 userData: this.userData
             });
         } catch (error) {
-            this.showError('Ошибка доступа к камере/микрофону');
+            this.showError('Ошибка доступа к камере/микрофону. Разрешите доступ и обновите страницу.');
             console.error('Media error:', error);
         }
     }
@@ -127,14 +130,25 @@ class VideoChatApp {
     async initializeMedia() {
         try {
             this.localStream = await navigator.mediaDevices.getUserMedia({
-                video: true,
-                audio: true
+                video: {
+                    width: { ideal: 640 },
+                    height: { ideal: 480 },
+                    frameRate: { ideal: 30 }
+                },
+                audio: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true
+                }
             });
             
             const localVideo = document.getElementById('localVideo');
             localVideo.srcObject = this.localStream;
+            
+            console.log('Media initialized successfully');
         } catch (error) {
-            throw new Error('Media access denied');
+            console.error('Error accessing media devices:', error);
+            throw error;
         }
     }
 
@@ -145,72 +159,104 @@ class VideoChatApp {
         await this.createPeerConnection();
         this.addLocalTracks();
         
-        // Создаем offer если мы инициатор
-        if (this.socket.id < partnerId) {
-            await this.createOffer();
-        }
+        // Создаем offer
+        await this.createOffer();
     }
 
     async createPeerConnection() {
-        const configuration = {
-            iceServers: [
-                { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' }
-            ]
-        };
+        try {
+            const configuration = {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' },
+                    { urls: 'stun:stun2.l.google.com:19302' }
+                ],
+                iceCandidatePoolSize: 10
+            };
 
-        this.peerConnection = new RTCPeerConnection(configuration);
+            this.peerConnection = new RTCPeerConnection(configuration);
 
-        // Обработка удаленного потока
-        this.peerConnection.ontrack = (event) => {
-            const remoteVideo = document.getElementById('remoteVideo');
-            if (event.streams && event.streams[0]) {
-                remoteVideo.srcObject = event.streams[0];
-                this.remoteStream = event.streams[0];
-            }
-        };
+            // Обработка удаленного потока
+            this.peerConnection.ontrack = (event) => {
+                console.log('Received remote track:', event);
+                const remoteVideo = document.getElementById('remoteVideo');
+                if (event.streams && event.streams[0]) {
+                    remoteVideo.srcObject = event.streams[0];
+                    this.remoteStream = event.streams[0];
+                    console.log('Remote video stream set');
+                }
+            };
 
-        // Обработка ICE кандидатов
-        this.peerConnection.onicecandidate = (event) => {
-            if (event.candidate) {
-                this.socket.emit('ice-candidate', {
-                    target: this.partnerData.partnerId,
-                    candidate: event.candidate
-                });
-            }
-        };
+            // Обработка ICE кандидатов
+            this.peerConnection.onicecandidate = (event) => {
+                if (event.candidate && this.partnerData) {
+                    console.log('Sending ICE candidate');
+                    this.socket.emit('ice-candidate', {
+                        target: this.partnerData.partnerId,
+                        candidate: event.candidate
+                    });
+                }
+            };
 
-        this.peerConnection.onconnectionstatechange = () => {
-            console.log('Connection state:', this.peerConnection.connectionState);
-        };
+            this.peerConnection.oniceconnectionstatechange = () => {
+                console.log('ICE connection state:', this.peerConnection.iceConnectionState);
+            };
+
+            this.peerConnection.onconnectionstatechange = () => {
+                console.log('Connection state:', this.peerConnection.connectionState);
+            };
+
+            this.peerConnection.onsignalingstatechange = () => {
+                console.log('Signaling state:', this.peerConnection.signalingState);
+            };
+
+        } catch (error) {
+            console.error('Error creating peer connection:', error);
+        }
     }
 
     addLocalTracks() {
+        if (!this.localStream) {
+            console.error('No local stream available');
+            return;
+        }
+
         this.localStream.getTracks().forEach(track => {
             this.peerConnection.addTrack(track, this.localStream);
+            console.log('Added local track:', track.kind);
         });
     }
 
     async createOffer() {
         try {
-            const offer = await this.peerConnection.createOffer();
+            const offer = await this.peerConnection.createOffer({
+                offerToReceiveAudio: true,
+                offerToReceiveVideo: true
+            });
+            
             await this.peerConnection.setLocalDescription(offer);
             
             this.socket.emit('webrtc-offer', {
                 target: this.partnerData.partnerId,
                 sdp: offer
             });
+            
+            console.log('Offer created and sent');
         } catch (error) {
             console.error('Error creating offer:', error);
         }
     }
 
     async handleOffer(offer, sender) {
-        await this.createPeerConnection();
-        this.addLocalTracks();
-        
         try {
-            await this.peerConnection.setRemoteDescription(offer);
+            if (!this.peerConnection) {
+                await this.createPeerConnection();
+                this.addLocalTracks();
+            }
+            
+            await this.peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+            console.log('Remote description set (offer)');
+            
             const answer = await this.peerConnection.createAnswer();
             await this.peerConnection.setLocalDescription(answer);
             
@@ -218,6 +264,8 @@ class VideoChatApp {
                 target: sender,
                 sdp: answer
             });
+            
+            console.log('Answer created and sent');
         } catch (error) {
             console.error('Error handling offer:', error);
         }
@@ -225,7 +273,13 @@ class VideoChatApp {
 
     async handleAnswer(answer) {
         try {
-            await this.peerConnection.setRemoteDescription(answer);
+            if (!this.peerConnection) {
+                console.error('No peer connection for answer');
+                return;
+            }
+            
+            await this.peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+            console.log('Remote description set (answer)');
         } catch (error) {
             console.error('Error handling answer:', error);
         }
@@ -233,7 +287,13 @@ class VideoChatApp {
 
     async handleIceCandidate(candidate) {
         try {
-            await this.peerConnection.addIceCandidate(candidate);
+            if (!this.peerConnection) {
+                console.error('No peer connection for ICE candidate');
+                return;
+            }
+            
+            await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+            console.log('ICE candidate added');
         } catch (error) {
             console.error('Error adding ICE candidate:', error);
         }
@@ -241,50 +301,56 @@ class VideoChatApp {
 
     toggleAudio() {
         if (this.localStream) {
-            const audioTrack = this.localStream.getAudioTracks()[0];
-            if (audioTrack) {
+            const audioTracks = this.localStream.getAudioTracks();
+            if (audioTracks.length > 0) {
+                const audioTrack = audioTracks[0];
                 audioTrack.enabled = !audioTrack.enabled;
                 const button = document.getElementById('muteAudio');
                 button.textContent = audioTrack.enabled ? '🔊' : '🔇';
+                console.log('Audio toggled:', audioTrack.enabled);
             }
         }
     }
 
     toggleVideo() {
         if (this.localStream) {
-            const videoTrack = this.localStream.getVideoTracks()[0];
-            if (videoTrack) {
+            const videoTracks = this.localStream.getVideoTracks();
+            if (videoTracks.length > 0) {
+                const videoTrack = videoTracks[0];
                 videoTrack.enabled = !videoTrack.enabled;
                 const button = document.getElementById('muteVideo');
                 button.textContent = videoTrack.enabled ? '📹' : '❌';
+                console.log('Video toggled:', videoTrack.enabled);
             }
         }
     }
 
     nextPartner() {
-        if (this.peerConnection) {
-            this.peerConnection.close();
-            this.peerConnection = null;
-        }
-        
+        console.log('Switching to next partner');
+        this.cleanupPeerConnection();
         this.socket.emit('next-partner');
         this.showScreen('waitingScreen');
         this.clearChat();
     }
 
     hangUp() {
-        if (this.peerConnection) {
-            this.peerConnection.close();
-            this.peerConnection = null;
-        }
+        console.log('Hanging up');
+        this.cleanupPeerConnection();
+        this.showScreen('citySelection');
+        this.clearChat();
         
+        // Останавливаем локальный поток
         if (this.localStream) {
             this.localStream.getTracks().forEach(track => track.stop());
             this.localStream = null;
         }
-        
-        this.showScreen('citySelection');
-        this.clearChat();
+    }
+
+    cleanupPeerConnection() {
+        if (this.peerConnection) {
+            this.peerConnection.close();
+            this.peerConnection = null;
+        }
     }
 
     sendMessage() {
@@ -323,10 +389,10 @@ class VideoChatApp {
     }
 
     updatePartnerInfo() {
-        if (this.partnerData) {
-            const info = `${this.partnerData.name}, ${this.partnerData.age}`;
+        if (this.partnerData && this.partnerData.partnerData) {
+            const info = `${this.partnerData.partnerData.name}, ${this.partnerData.partnerData.age}`;
             document.getElementById('partnerInfo').textContent = info;
-            document.getElementById('partnerLabel').textContent = this.partnerData.name;
+            document.getElementById('partnerLabel').textContent = this.partnerData.partnerData.name;
         }
     }
 
@@ -347,7 +413,7 @@ class VideoChatApp {
         errorDiv.textContent = message;
         setTimeout(() => {
             errorDiv.textContent = '';
-        }, 3000);
+        }, 5000);
     }
 }
 
