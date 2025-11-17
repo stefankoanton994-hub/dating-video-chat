@@ -1,12 +1,13 @@
-class VideoChatApp {
+class AudioChat {
     constructor() {
         this.socket = null;
-        this.localStream = null;
-        this.remoteStream = null;
-        this.peerConnection = null;
+        this.audioStream = null;
+        this.partnerData = null;
         this.currentCity = null;
         this.userData = null;
-        this.partnerData = null;
+        this.isMuted = false;
+        this.audioContext = null;
+        this.analyser = null;
         
         this.initializeApp();
     }
@@ -14,14 +15,14 @@ class VideoChatApp {
     initializeApp() {
         this.setupEventListeners();
         this.initializeSocket();
+        console.log('🎤 AudioChat initialized');
     }
 
     initializeSocket() {
-        // Подключаемся к серверу
-        this.socket = io(window.location.origin);
+        this.socket = io();
         
         this.socket.on('connect', () => {
-            console.log('Connected to server:', this.socket.id);
+            console.log('✅ Connected to server:', this.socket.id);
         });
 
         this.socket.on('cities-list', (cities) => {
@@ -30,31 +31,17 @@ class VideoChatApp {
 
         this.socket.on('waiting-for-partner', () => {
             this.showScreen('waitingScreen');
+            this.updateStatus('⏳ Ищем партнера для аудио-чата...');
         });
 
         this.socket.on('partner-found', async (data) => {
-            console.log('Partner found:', data);
+            console.log('🎯 Partner found:', data);
             this.partnerData = data;
-            await this.startVideoCall(data.partnerId);
+            await this.startAudioChat();
         });
 
         this.socket.on('users-in-room', (count) => {
             document.getElementById('usersCount').textContent = count;
-        });
-
-        this.socket.on('webrtc-offer', async (data) => {
-            console.log('Received offer from:', data.sender);
-            await this.handleOffer(data.sdp, data.sender);
-        });
-
-        this.socket.on('webrtc-answer', async (data) => {
-            console.log('Received answer from:', data.sender);
-            await this.handleAnswer(data.sdp);
-        });
-
-        this.socket.on('ice-candidate', async (data) => {
-            console.log('Received ICE candidate from:', data.sender);
-            await this.handleIceCandidate(data.candidate);
         });
 
         this.socket.on('partner-disconnected', () => {
@@ -71,16 +58,13 @@ class VideoChatApp {
             this.hangUp();
         });
 
-        document.getElementById('muteAudio').addEventListener('click', this.toggleAudio.bind(this));
-        document.getElementById('muteVideo').addEventListener('click', this.toggleVideo.bind(this));
-        document.getElementById('nextPartner').addEventListener('click', this.nextPartner.bind(this));
-        document.getElementById('hangUp').addEventListener('click', this.hangUp.bind(this));
+        document.getElementById('muteAudio').addEventListener('click', () => this.toggleAudio());
+        document.getElementById('nextPartner').addEventListener('click', () => this.nextPartner());
+        document.getElementById('hangUp').addEventListener('click', () => this.hangUp());
 
-        document.getElementById('sendMessage').addEventListener('click', this.sendMessage.bind(this));
+        document.getElementById('sendMessage').addEventListener('click', () => this.sendMessage());
         document.getElementById('messageInput').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                this.sendMessage();
-            }
+            if (e.key === 'Enter') this.sendMessage();
         });
     }
 
@@ -116,241 +100,176 @@ class VideoChatApp {
         this.userData = { name, age: parseInt(age), gender };
 
         try {
-            await this.initializeMedia();
-            this.socket.emit('join-city', {
-                city: city,
-                userData: this.userData
+            await this.initializeAudio();
+            this.socket.emit('join-city', { 
+                city: city, 
+                userData: this.userData 
             });
+            this.updateStatus('✅ Микрофон подключен');
         } catch (error) {
-            this.showError('Ошибка доступа к камере/микрофону. Разрешите доступ и обновите страницу.');
-            console.error('Media error:', error);
+            console.error('Audio error:', error);
+            this.showError('Не удалось подключить микрофон. Вы можете продолжить с текстовым чатом.');
+            // Все равно присоединяемся к чату
+            this.socket.emit('join-city', { 
+                city: city, 
+                userData: this.userData 
+            });
         }
     }
 
-    async initializeMedia() {
+    async initializeAudio() {
         try {
-            this.localStream = await navigator.mediaDevices.getUserMedia({
-                video: {
-                    width: { ideal: 640 },
-                    height: { ideal: 480 },
-                    frameRate: { ideal: 30 }
-                },
+            // Запрашиваем только аудио
+            this.audioStream = await navigator.mediaDevices.getUserMedia({
                 audio: {
                     echoCancellation: true,
                     noiseSuppression: true,
-                    autoGainControl: true
-                }
+                    autoGainControl: true,
+                    channelCount: 1
+                },
+                video: false
             });
             
-            const localVideo = document.getElementById('localVideo');
-            localVideo.srcObject = this.localStream;
+            // Создаем визуализацию звука
+            this.createAudioVisualizer();
             
-            console.log('Media initialized successfully');
+            console.log('🎤 Microphone access granted');
+            return true;
+            
         } catch (error) {
-            console.error('Error accessing media devices:', error);
-            throw error;
+            console.error('🎤 Microphone access denied:', error);
+            this.updateStatus('🔇 Микрофон недоступен (только текстовый чат)');
+            return false;
         }
     }
 
-    async startVideoCall(partnerId) {
-        this.showScreen('videoChat');
+    createAudioVisualizer() {
+        if (!this.audioStream) return;
+        
+        try {
+            this.audioContext = new AudioContext();
+            this.analyser = this.audioContext.createAnalyser();
+            const source = this.audioContext.createMediaStreamSource(this.audioStream);
+            source.connect(this.analyser);
+            
+            this.analyser.fftSize = 256;
+            const bufferLength = this.analyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+            
+            // Функция для анимации визуализатора
+            const drawVisualizer = () => {
+                if (!this.analyser) return;
+                
+                this.analyser.getByteFrequencyData(dataArray);
+                
+                // Обновляем индикатор громкости
+                const volume = dataArray.reduce((a, b) => a + b) / bufferLength;
+                this.updateVolumeIndicator(volume);
+                
+                requestAnimationFrame(drawVisualizer);
+            };
+            
+            drawVisualizer();
+            console.log('📊 Audio visualizer created');
+            
+        } catch (error) {
+            console.error('Visualizer error:', error);
+        }
+    }
+
+    updateVolumeIndicator(volume) {
+        const indicator = document.getElementById('volumeIndicator');
+        if (indicator) {
+            const bars = 5;
+            const activeBars = Math.min(bars, Math.ceil(volume / 20));
+            let indicatorHTML = '';
+            
+            for (let i = 0; i < bars; i++) {
+                if (i < activeBars) {
+                    indicatorHTML += '█';
+                } else {
+                    indicatorHTML += '░';
+                }
+            }
+            
+            indicator.textContent = indicatorHTML;
+        }
+    }
+
+    async startAudioChat() {
+        this.showScreen('audioChat');
         this.updatePartnerInfo();
         
-        await this.createPeerConnection();
-        this.addLocalTracks();
+        this.displayMessage({
+            text: `Вы connected с ${this.partnerData.partnerData.name}. Начинайте общение!`,
+            sender: 'Система',
+            timestamp: new Date().toLocaleTimeString()
+        }, 'system-message');
         
-        // Создаем offer
-        await this.createOffer();
+        this.updateStatus('🎤 Аудио-чат запущен. Говорите!');
+        
+        // Запускаем индикатор звука
+        this.startAudioMonitoring();
     }
 
-    async createPeerConnection() {
-        try {
-            const configuration = {
-                iceServers: [
-                    { urls: 'stun:stun.l.google.com:19302' },
-                    { urls: 'stun:stun1.l.google.com:19302' },
-                    { urls: 'stun:stun2.l.google.com:19302' }
-                ],
-                iceCandidatePoolSize: 10
-            };
-
-            this.peerConnection = new RTCPeerConnection(configuration);
-
-            // Обработка удаленного потока
-            this.peerConnection.ontrack = (event) => {
-                console.log('Received remote track:', event);
-                const remoteVideo = document.getElementById('remoteVideo');
-                if (event.streams && event.streams[0]) {
-                    remoteVideo.srcObject = event.streams[0];
-                    this.remoteStream = event.streams[0];
-                    console.log('Remote video stream set');
-                }
-            };
-
-            // Обработка ICE кандидатов
-            this.peerConnection.onicecandidate = (event) => {
-                if (event.candidate && this.partnerData) {
-                    console.log('Sending ICE candidate');
-                    this.socket.emit('ice-candidate', {
-                        target: this.partnerData.partnerId,
-                        candidate: event.candidate
-                    });
-                }
-            };
-
-            this.peerConnection.oniceconnectionstatechange = () => {
-                console.log('ICE connection state:', this.peerConnection.iceConnectionState);
-            };
-
-            this.peerConnection.onconnectionstatechange = () => {
-                console.log('Connection state:', this.peerConnection.connectionState);
-            };
-
-            this.peerConnection.onsignalingstatechange = () => {
-                console.log('Signaling state:', this.peerConnection.signalingState);
-            };
-
-        } catch (error) {
-            console.error('Error creating peer connection:', error);
-        }
-    }
-
-    addLocalTracks() {
-        if (!this.localStream) {
-            console.error('No local stream available');
-            return;
-        }
-
-        this.localStream.getTracks().forEach(track => {
-            this.peerConnection.addTrack(track, this.localStream);
-            console.log('Added local track:', track.kind);
-        });
-    }
-
-    async createOffer() {
-        try {
-            const offer = await this.peerConnection.createOffer({
-                offerToReceiveAudio: true,
-                offerToReceiveVideo: true
-            });
-            
-            await this.peerConnection.setLocalDescription(offer);
-            
-            this.socket.emit('webrtc-offer', {
-                target: this.partnerData.partnerId,
-                sdp: offer
-            });
-            
-            console.log('Offer created and sent');
-        } catch (error) {
-            console.error('Error creating offer:', error);
-        }
-    }
-
-    async handleOffer(offer, sender) {
-        try {
-            if (!this.peerConnection) {
-                await this.createPeerConnection();
-                this.addLocalTracks();
-            }
-            
-            await this.peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
-            console.log('Remote description set (offer)');
-            
-            const answer = await this.peerConnection.createAnswer();
-            await this.peerConnection.setLocalDescription(answer);
-            
-            this.socket.emit('webrtc-answer', {
-                target: sender,
-                sdp: answer
-            });
-            
-            console.log('Answer created and sent');
-        } catch (error) {
-            console.error('Error handling offer:', error);
-        }
-    }
-
-    async handleAnswer(answer) {
-        try {
-            if (!this.peerConnection) {
-                console.error('No peer connection for answer');
-                return;
-            }
-            
-            await this.peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
-            console.log('Remote description set (answer)');
-        } catch (error) {
-            console.error('Error handling answer:', error);
-        }
-    }
-
-    async handleIceCandidate(candidate) {
-        try {
-            if (!this.peerConnection) {
-                console.error('No peer connection for ICE candidate');
-                return;
-            }
-            
-            await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-            console.log('ICE candidate added');
-        } catch (error) {
-            console.error('Error adding ICE candidate:', error);
+    startAudioMonitoring() {
+        // Индикатор что аудио работает
+        const audioStatus = document.getElementById('audioStatus');
+        if (audioStatus) {
+            audioStatus.textContent = '🔊 Аудио активно';
+            audioStatus.className = 'status-active';
         }
     }
 
     toggleAudio() {
-        if (this.localStream) {
-            const audioTracks = this.localStream.getAudioTracks();
-            if (audioTracks.length > 0) {
-                const audioTrack = audioTracks[0];
-                audioTrack.enabled = !audioTrack.enabled;
-                const button = document.getElementById('muteAudio');
-                button.textContent = audioTrack.enabled ? '🔊' : '🔇';
-                console.log('Audio toggled:', audioTrack.enabled);
+        if (this.audioStream) {
+            this.isMuted = !this.isMuted;
+            this.audioStream.getAudioTracks()[0].enabled = !this.isMuted;
+            
+            const button = document.getElementById('muteAudio');
+            const status = document.getElementById('audioStatus');
+            
+            if (this.isMuted) {
+                button.textContent = '🔇';
+                button.className = 'control-btn muted';
+                if (status) {
+                    status.textContent = '🔇 Микрофон выключен';
+                    status.className = 'status-muted';
+                }
+                this.updateStatus('🔇 Микрофон выключен');
+            } else {
+                button.textContent = '🎤';
+                button.className = 'control-btn';
+                if (status) {
+                    status.textContent = '🔊 Аудио активно';
+                    status.className = 'status-active';
+                }
+                this.updateStatus('🎤 Микрофон включен');
             }
-        }
-    }
-
-    toggleVideo() {
-        if (this.localStream) {
-            const videoTracks = this.localStream.getVideoTracks();
-            if (videoTracks.length > 0) {
-                const videoTrack = videoTracks[0];
-                videoTrack.enabled = !videoTrack.enabled;
-                const button = document.getElementById('muteVideo');
-                button.textContent = videoTrack.enabled ? '📹' : '❌';
-                console.log('Video toggled:', videoTrack.enabled);
-            }
+        } else {
+            this.updateStatus('🎤 Микрофон недоступен');
         }
     }
 
     nextPartner() {
-        console.log('Switching to next partner');
-        this.cleanupPeerConnection();
+        this.updateStatus('🔄 Ищем нового партнера...');
         this.socket.emit('next-partner');
         this.showScreen('waitingScreen');
         this.clearChat();
     }
 
     hangUp() {
-        console.log('Hanging up');
-        this.cleanupPeerConnection();
+        if (this.audioStream) {
+            this.audioStream.getTracks().forEach(track => track.stop());
+        }
+        if (this.audioContext) {
+            this.audioContext.close();
+        }
         this.showScreen('citySelection');
         this.clearChat();
-        
-        // Останавливаем локальный поток
-        if (this.localStream) {
-            this.localStream.getTracks().forEach(track => track.stop());
-            this.localStream = null;
-        }
-    }
-
-    cleanupPeerConnection() {
-        if (this.peerConnection) {
-            this.peerConnection.close();
-            this.peerConnection = null;
-        }
+        this.partnerData = null;
+        this.currentCity = null;
+        this.updateStatus('📞 Звонок завершен');
     }
 
     sendMessage() {
@@ -364,7 +283,6 @@ class VideoChatApp {
                 sender: this.userData.name,
                 timestamp: new Date().toLocaleTimeString()
             }, 'own');
-            
             input.value = '';
         }
     }
@@ -373,32 +291,54 @@ class VideoChatApp {
         const messagesContainer = document.getElementById('chatMessages');
         const messageDiv = document.createElement('div');
         messageDiv.className = `message ${type}`;
-        
         messageDiv.innerHTML = `
             <div class="message-sender">${data.sender}</div>
             <div class="message-text">${data.text}</div>
             <div class="message-time">${data.timestamp}</div>
         `;
-        
         messagesContainer.appendChild(messageDiv);
         messagesContainer.scrollTop = messagesContainer.scrollHeight;
     }
 
     clearChat() {
-        document.getElementById('chatMessages').innerHTML = '';
+        document.getElementById('chatMessages').innerHTML = 
+            '<div class="system-message">Аудио-чат подключен. Говорите в микрофон и общайтесь в чате!</div>';
     }
 
     updatePartnerInfo() {
         if (this.partnerData && this.partnerData.partnerData) {
             const info = `${this.partnerData.partnerData.name}, ${this.partnerData.partnerData.age}`;
             document.getElementById('partnerInfo').textContent = info;
-            document.getElementById('partnerLabel').textContent = this.partnerData.partnerData.name;
+            document.getElementById('partnerName').textContent = this.partnerData.partnerData.name;
+            
+            // Устанавливаем аватарку по полу
+            const partnerAvatar = document.getElementById('partnerAvatar');
+            if (partnerAvatar) {
+                partnerAvatar.textContent = this.partnerData.partnerData.gender === 'female' ? '👩' : '👨';
+            }
         }
     }
 
     handlePartnerDisconnected() {
-        alert('Партнер отключился');
-        this.nextPartner();
+        this.displayMessage({
+            text: 'Партнер отключился. Ищем нового...',
+            sender: 'Система',
+            timestamp: new Date().toLocaleTimeString()
+        }, 'system-message');
+        
+        this.updateStatus('❌ Партнер отключился');
+        
+        setTimeout(() => {
+            this.nextPartner();
+        }, 2000);
+    }
+
+    updateStatus(message) {
+        const statusElement = document.getElementById('connectionStatus');
+        if (statusElement) {
+            statusElement.textContent = message;
+        }
+        console.log('Status:', message);
     }
 
     showScreen(screenId) {
@@ -411,13 +351,11 @@ class VideoChatApp {
     showError(message) {
         const errorDiv = document.getElementById('formError');
         errorDiv.textContent = message;
-        setTimeout(() => {
-            errorDiv.textContent = '';
-        }, 5000);
+        setTimeout(() => errorDiv.textContent = '', 5000);
     }
 }
 
 // Инициализация приложения
 document.addEventListener('DOMContentLoaded', () => {
-    new VideoChatApp();
+    new AudioChat();
 });

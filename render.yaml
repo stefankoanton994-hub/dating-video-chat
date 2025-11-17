@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: dating-video-chat
+    name: audio-chat-dating
     env: node
     plan: free
     buildCommand: cd server && npm install

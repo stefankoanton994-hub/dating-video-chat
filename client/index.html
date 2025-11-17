@@ -3,16 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VideoChat Знакомства</title>
+    <title>AudioChat - Голосовые знакомства</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎤</text></svg>">
     <link rel="stylesheet" href="style.css">
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎥</text></svg>">
 </head>
 <body>
     <div id="app">
         <!-- Экран выбора города -->
         <div id="citySelection" class="screen active">
             <div class="container">
-                <h1>🎥 VideoChat Знакомства</h1>
+                <h1>🎤 AudioChat</h1>
+                <p class="subtitle">Голосовые знакомства по городам</p>
+                
                 <div class="user-form">
                     <input type="text" id="userName" placeholder="Ваше имя" maxlength="20">
                     <input type="number" id="userAge" placeholder="Возраст" min="18" max="99">
@@ -22,9 +24,17 @@
                         <option value="female">Женской</option>
                     </select>
                 </div>
+                
                 <div class="cities-grid" id="citiesGrid">
                     <!-- Города загружаются через JavaScript -->
                 </div>
+                
+                <div class="features">
+                    <div class="feature">🎤 Голосовой чат</div>
+                    <div class="feature">💬 Текстовый чат</div>
+                    <div class="feature">🏙️ Поиск по городам</div>
+                </div>
+                
                 <div id="formError" class="error"></div>
             </div>
         </div>
@@ -33,8 +43,14 @@
         <div id="waitingScreen" class="screen">
             <div class="container">
                 <div class="loading">
-                    <div class="spinner"></div>
-                    <h2>Ищем партнера...</h2>
+                    <div class="audio-wave">
+                        <div class="bar"></div>
+                        <div class="bar"></div>
+                        <div class="bar"></div>
+                        <div class="bar"></div>
+                        <div class="bar"></div>
+                    </div>
+                    <h2>Ищем партнера для аудио-чата...</h2>
                     <p>Ожидайте соединения</p>
                     <div class="room-info">
                         Пользователей онлайн в вашем городе: <span id="usersCount">0</span>
@@ -44,30 +60,48 @@
             </div>
         </div>
 
-        <!-- Экран видеочата -->
-        <div id="videoChat" class="screen">
-            <div class="video-container">
-                <div class="video-wrapper">
-                    <video id="localVideo" autoplay muted playsinline></video>
-                    <div class="video-label">Вы</div>
+        <!-- Экран аудиочата -->
+        <div id="audioChat" class="screen">
+            <div class="audio-container">
+                <div class="user-card local-user">
+                    <div class="avatar">🎤</div>
+                    <div class="user-name">Вы</div>
+                    <div class="user-details" id="userDetails"></div>
+                    <div class="volume-indicator">
+                        <span>Громкость:</span>
+                        <span id="volumeIndicator">░░░░░</span>
+                    </div>
                 </div>
-                <div class="video-wrapper">
-                    <video id="remoteVideo" autoplay playsinline></video>
-                    <div class="video-label" id="partnerLabel">Партнер</div>
+                
+                <div class="connection-section">
+                    <div class="connection-indicator">
+                        <div class="pulse"></div>
+                        <div id="connectionStatus" class="status-text">🔗 Соединение установлено</div>
+                        <div id="audioStatus" class="status-active">🔊 Аудио активно</div>
+                    </div>
+                </div>
+
+                <div class="user-card partner-user">
+                    <div class="avatar" id="partnerAvatar">👤</div>
+                    <div class="user-name" id="partnerName">Партнер</div>
+                    <div class="user-details" id="partnerDetails"></div>
+                    <div class="partner-status">Говорит...</div>
                 </div>
             </div>
 
             <div class="controls">
-                <button id="muteAudio" class="control-btn">🔇</button>
-                <button id="muteVideo" class="control-btn">📹</button>
+                <button id="muteAudio" class="control-btn">🎤</button>
                 <button id="nextPartner" class="control-btn next-btn">➡️ Следующий</button>
                 <button id="hangUp" class="control-btn hangup-btn">📞 Завершить</button>
             </div>
 
             <div class="chat-container">
-                <div class="chat-messages" id="chatMessages"></div>
+                <div class="chat-header">💬 Текстовый чат</div>
+                <div class="chat-messages" id="chatMessages">
+                    <div class="system-message">Аудио-чат подключен. Говорите в микрофон и общайтесь в чате!</div>
+                </div>
                 <div class="chat-input">
-                    <input type="text" id="messageInput" placeholder="Введите сообщение...">
+                    <input type="text" id="messageInput" placeholder="Введите сообщение..." maxlength="500">
                     <button id="sendMessage">Отправить</button>
                 </div>
             </div>
