@@ -78,15 +78,28 @@ io.on('connection', (socket) => {
     io.to(city).emit('users-in-room', roomUsers.length);
   });
 
-  // Симуляция активности говорящего
-  socket.on('user-speaking', (data) => {
-    const user = users.get(socket.id);
-    if (user && user.partnerId) {
-      socket.to(user.partnerId).emit('partner-speaking', {
-        volume: data.volume,
-        isSpeaking: data.isSpeaking
-      });
-    }
+  // WebRTC signaling
+  socket.on('webrtc-offer', (data) => {
+    console.log('📨 Offer from', socket.id, 'to', data.target);
+    socket.to(data.target).emit('webrtc-offer', {
+      sdp: data.sdp,
+      sender: socket.id
+    });
+  });
+
+  socket.on('webrtc-answer', (data) => {
+    console.log('📨 Answer from', socket.id, 'to', data.target);
+    socket.to(data.target).emit('webrtc-answer', {
+      sdp: data.sdp,
+      sender: socket.id
+    });
+  });
+
+  socket.on('ice-candidate', (data) => {
+    socket.to(data.target).emit('ice-candidate', {
+      candidate: data.candidate,
+      sender: socket.id
+    });
   });
 
   socket.on('next-partner', () => {

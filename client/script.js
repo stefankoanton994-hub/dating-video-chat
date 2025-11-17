@@ -1,16 +1,15 @@
 class AudioChat {
     constructor() {
         this.socket = null;
-        this.audioStream = null;
+        this.localStream = null;
+        this.remoteStream = null;
+        this.peerConnection = null;
         this.partnerData = null;
         this.currentCity = null;
         this.userData = null;
         this.isMuted = false;
         this.audioContext = null;
         this.analyser = null;
-        this.isSpeaking = false;
-        this.partnerSpeaking = false;
-        this.simulationInterval = null;
         
         this.initializeApp();
     }
@@ -40,19 +39,23 @@ class AudioChat {
         this.socket.on('partner-found', async (data) => {
             console.log('🎯 Partner found:', data);
             this.partnerData = data;
-            await this.startAudioChat();
+            await this.startAudioCall(data.partnerId);
         });
 
         this.socket.on('users-in-room', (count) => {
             document.getElementById('usersCount').textContent = count;
         });
 
-        this.socket.on('partner-speaking', (data) => {
-            this.updatePartnerSpeaking(data.volume, data.isSpeaking);
+        this.socket.on('webrtc-offer', async (data) => {
+            await this.handleOffer(data.sdp, data.sender);
         });
 
-        this.socket.on('partner-audio-state', (data) => {
-            this.updatePartnerAudioState(data);
+        this.socket.on('webrtc-answer', async (data) => {
+            await this.handleAnswer(data.sdp);
+        });
+
+        this.socket.on('ice-candidate', async (data) => {
+            await this.handleIceCandidate(data.candidate);
         });
 
         this.socket.on('partner-disconnected', () => {
@@ -68,9 +71,6 @@ class AudioChat {
         document.getElementById('muteAudio').addEventListener('click', () => this.toggleAudio());
         document.getElementById('nextPartner').addEventListener('click', () => this.nextPartner());
         document.getElementById('hangUp').addEventListener('click', () => this.hangUp());
-
-        // Добавляем кнопку тестового звука
-        document.getElementById('testSound').addEventListener('click', () => this.playTestSound());
     }
 
     renderCities(cities) {
@@ -113,18 +113,13 @@ class AudioChat {
             this.updateStatus('✅ Микрофон подключен');
         } catch (error) {
             console.error('Audio error:', error);
-            // Продолжаем без микрофона
-            this.socket.emit('join-city', { 
-                city: city, 
-                userData: this.userData 
-            });
-            this.updateStatus('🎤 Чат подключен (используйте тестовый звук)');
+            this.showError('Не удалось подключить микрофон. Пожалуйста, разрешите доступ к микрофону.');
         }
     }
 
     async initializeAudio() {
         try {
-            this.audioStream = await navigator.mediaDevices.getUserMedia({
+            this.localStream = await navigator.mediaDevices.getUserMedia({
                 audio: {
                     echoCancellation: true,
                     noiseSuppression: true,
@@ -140,18 +135,17 @@ class AudioChat {
             
         } catch (error) {
             console.error('🎤 Microphone access denied:', error);
-            this.createFakeVisualizer();
-            return false;
+            throw error;
         }
     }
 
     createAudioVisualizer() {
-        if (!this.audioStream) return;
+        if (!this.localStream) return;
         
         try {
             this.audioContext = new AudioContext();
             this.analyser = this.audioContext.createAnalyser();
-            const source = this.audioContext.createMediaStreamSource(this.audioStream);
+            const source = this.audioContext.createMediaStreamSource(this.localStream);
             source.connect(this.analyser);
             
             this.analyser.fftSize = 256;
@@ -163,31 +157,7 @@ class AudioChat {
                 
                 this.analyser.getByteFrequencyData(dataArray);
                 const volume = dataArray.reduce((a, b) => a + b) / bufferLength;
-                
-                // Обновляем индикатор громкости
                 this.updateVolumeIndicator(volume, 'local');
-                
-                // Симулируем передачу данных партнеру
-                if (volume > 25 && !this.isMuted) {
-                    if (!this.isSpeaking) {
-                        this.isSpeaking = true;
-                        this.socket.emit('partner-speaking', { 
-                            volume: volume, 
-                            isSpeaking: true 
-                        });
-                    }
-                    // Периодическая отправка данных о громкости
-                    this.socket.emit('partner-speaking', { 
-                        volume: volume, 
-                        isSpeaking: true 
-                    });
-                } else if (this.isSpeaking) {
-                    this.isSpeaking = false;
-                    this.socket.emit('partner-speaking', { 
-                        volume: 0, 
-                        isSpeaking: false 
-                    });
-                }
                 
                 requestAnimationFrame(drawVisualizer);
             };
@@ -197,54 +167,192 @@ class AudioChat {
             
         } catch (error) {
             console.error('Visualizer error:', error);
-            this.createFakeVisualizer();
         }
     }
 
-    createFakeVisualizer() {
-        // Фейковый визуализатор с реалистичным поведением
-        let fakeVolume = 0;
-        let isFakeSpeaking = false;
+    async startAudioCall(partnerId) {
+        this.showScreen('audioChat');
+        this.updatePartnerInfo();
         
-        const drawFakeVisualizer = () => {
-            // Реалистичная симуляция разговора
-            if (Math.random() > 0.8 && !this.isMuted) {
-                // Начало "фразы"
-                isFakeSpeaking = true;
-                fakeVolume = 30 + Math.random() * 40;
-            } else if (isFakeSpeaking && Math.random() > 0.3) {
-                // Продолжение "фразы" с колебаниями
-                fakeVolume = Math.max(20, fakeVolume + (Math.random() - 0.5) * 15);
-            } else if (isFakeSpeaking) {
-                // Конец "фразы"
-                isFakeSpeaking = false;
-                fakeVolume = 0;
-            } else {
-                // Тишина
-                fakeVolume = Math.max(0, fakeVolume - 5);
+        await this.createPeerConnection();
+        this.addLocalTracks();
+        
+        // Создаем offer если мы инициаторы
+        if (this.socket.id < partnerId) {
+            await this.createOffer();
+        }
+        
+        this.updateStatus('🎤 Устанавливаем аудио-соединение...');
+    }
+
+    async createPeerConnection() {
+        try {
+            const configuration = {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' },
+                    { urls: 'stun:stun2.l.google.com:19302' }
+                ]
+            };
+
+            this.peerConnection = new RTCPeerConnection(configuration);
+
+            // Обработка удаленного аудио потока
+            this.peerConnection.ontrack = (event) => {
+                console.log('🔊 Received remote audio track');
+                if (event.streams && event.streams[0]) {
+                    this.remoteStream = event.streams[0];
+                    
+                    // Создаем аудио элемент для воспроизведения
+                    const remoteAudio = document.getElementById('remoteAudio');
+                    if (remoteAudio) {
+                        remoteAudio.srcObject = this.remoteStream;
+                        remoteAudio.play().then(() => {
+                            console.log('✅ Remote audio playing');
+                            this.updateStatus('✅ Аудио-соединение установлено! Говорите!');
+                            this.updatePartnerStatus('🔊 Подключен');
+                        }).catch(e => {
+                            console.error('Remote audio play error:', e);
+                            this.updateStatus('❌ Ошибка воспроизведения аудио');
+                        });
+                    }
+                    
+                    // Визуализатор для удаленного аудио
+                    this.createRemoteAudioVisualizer();
+                }
+            };
+
+            // ICE кандидаты
+            this.peerConnection.onicecandidate = (event) => {
+                if (event.candidate && this.partnerData) {
+                    this.socket.emit('ice-candidate', {
+                        target: this.partnerData.partnerId,
+                        candidate: event.candidate
+                    });
+                }
+            };
+
+            this.peerConnection.oniceconnectionstatechange = () => {
+                const state = this.peerConnection.iceConnectionState;
+                console.log('🔗 ICE connection state:', state);
+                
+                if (state === 'connected' || state === 'completed') {
+                    this.updateStatus('✅ Аудио-соединение установлено!');
+                } else if (state === 'failed' || state === 'disconnected') {
+                    this.updateStatus('❌ Проблемы с аудио-соединением');
+                }
+            };
+
+            this.peerConnection.onconnectionstatechange = () => {
+                console.log('🔄 Connection state:', this.peerConnection.connectionState);
+            };
+
+        } catch (error) {
+            console.error('PeerConnection error:', error);
+        }
+    }
+
+    addLocalTracks() {
+        if (this.localStream) {
+            this.localStream.getTracks().forEach(track => {
+                this.peerConnection.addTrack(track, this.localStream);
+            });
+            console.log('✅ Added local audio tracks');
+        }
+    }
+
+    async createOffer() {
+        try {
+            const offer = await this.peerConnection.createOffer();
+            await this.peerConnection.setLocalDescription(offer);
+            
+            this.socket.emit('webrtc-offer', {
+                target: this.partnerData.partnerId,
+                sdp: offer
+            });
+            
+            console.log('📨 Offer sent');
+        } catch (error) {
+            console.error('Offer error:', error);
+        }
+    }
+
+    async handleOffer(offer, sender) {
+        try {
+            if (!this.peerConnection) {
+                await this.createPeerConnection();
+                this.addLocalTracks();
             }
             
-            this.updateVolumeIndicator(fakeVolume, 'local');
+            await this.peerConnection.setRemoteDescription(offer);
+            const answer = await this.peerConnection.createAnswer();
+            await this.peerConnection.setLocalDescription(answer);
             
-            // Симулируем передачу данных партнеру
-            if (isFakeSpeaking && !this.isMuted) {
-                this.socket.emit('partner-speaking', { 
-                    volume: fakeVolume, 
-                    isSpeaking: true 
-                });
-            } else if (this.isSpeaking) {
-                this.isSpeaking = false;
-                this.socket.emit('partner-speaking', { 
-                    volume: 0, 
-                    isSpeaking: false 
-                });
-            }
+            this.socket.emit('webrtc-answer', {
+                target: sender,
+                sdp: answer
+            });
             
-            requestAnimationFrame(drawFakeVisualizer);
-        };
+            console.log('📨 Answer sent');
+        } catch (error) {
+            console.error('Handle offer error:', error);
+        }
+    }
+
+    async handleAnswer(answer) {
+        try {
+            await this.peerConnection.setRemoteDescription(answer);
+            console.log('✅ Remote description set');
+        } catch (error) {
+            console.error('Handle answer error:', error);
+        }
+    }
+
+    async handleIceCandidate(candidate) {
+        try {
+            await this.peerConnection.addIceCandidate(candidate);
+            console.log('✅ ICE candidate added');
+        } catch (error) {
+            console.error('ICE candidate error:', error);
+        }
+    }
+
+    createRemoteAudioVisualizer() {
+        if (!this.remoteStream) return;
         
-        drawFakeVisualizer();
-        console.log('📊 Fake audio visualizer created');
+        try {
+            const remoteAudioContext = new AudioContext();
+            const remoteAnalyser = remoteAudioContext.createAnalyser();
+            const remoteSource = remoteAudioContext.createMediaStreamSource(this.remoteStream);
+            remoteSource.connect(remoteAnalyser);
+            
+            remoteAnalyser.fftSize = 256;
+            const bufferLength = remoteAnalyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+            
+            const drawRemoteVisualizer = () => {
+                if (!remoteAnalyser) return;
+                
+                remoteAnalyser.getByteFrequencyData(dataArray);
+                const volume = dataArray.reduce((a, b) => a + b) / bufferLength;
+                this.updateVolumeIndicator(volume, 'partner');
+                
+                // Обновляем статус партнера
+                if (volume > 20) {
+                    this.updatePartnerStatus('🔊 ГОВОРИТ');
+                } else {
+                    this.updatePartnerStatus('🎤 Подключен');
+                }
+                
+                requestAnimationFrame(drawRemoteVisualizer);
+            };
+            
+            drawRemoteVisualizer();
+            console.log('📊 Remote audio visualizer created');
+            
+        } catch (error) {
+            console.error('Remote visualizer error:', error);
+        }
     }
 
     updateVolumeIndicator(volume, type) {
@@ -254,7 +362,7 @@ class AudioChat {
             
         if (indicator) {
             const bars = 8;
-            const activeBars = Math.min(bars, Math.ceil(volume / (type === 'local' ? 12 : 10)));
+            const activeBars = Math.min(bars, Math.ceil(volume / 12));
             let indicatorHTML = '';
             
             for (let i = 0; i < bars; i++) {
@@ -267,184 +375,78 @@ class AudioChat {
             
             indicator.textContent = indicatorHTML;
             
-            // Цветовая индикация
             if (volume > 40) {
                 indicator.style.color = '#4CAF50';
-                indicator.style.textShadow = '0 0 10px #4CAF50';
             } else if (volume > 20) {
                 indicator.style.color = '#FF9800';
-                indicator.style.textShadow = '0 0 5px #FF9800';
             } else {
                 indicator.style.color = '#f44336';
-                indicator.style.textShadow = 'none';
             }
         }
     }
 
-    updatePartnerSpeaking(volume, isSpeaking) {
-        const partnerIndicator = document.getElementById('partnerVolumeIndicator');
+    updatePartnerStatus(status) {
         const partnerStatus = document.querySelector('.partner-status');
         const partnerCard = document.querySelector('.partner-user');
         
-        // Обновляем индикатор громкости партнера
-        this.updateVolumeIndicator(volume, 'partner');
-        
-        // Обновляем статус партнера
         if (partnerStatus) {
-            if (isSpeaking && volume > 15) {
-                partnerStatus.textContent = '🔊 ГОВОРИТ';
+            partnerStatus.textContent = status;
+            
+            if (status === '🔊 ГОВОРИТ') {
                 partnerStatus.style.color = '#4CAF50';
                 partnerStatus.style.fontWeight = 'bold';
-                
-                // Добавляем анимацию к карточке партнера
                 if (partnerCard) {
                     partnerCard.style.boxShadow = '0 0 20px #4CAF50';
-                    partnerCard.style.borderColor = '#4CAF50';
                 }
-                
-                // Воспроизводим псевдо-звук (опционально)
-                this.playPartnerSound(volume);
-                
             } else {
-                partnerStatus.textContent = '🎤 слушает';
                 partnerStatus.style.color = '#667eea';
                 partnerStatus.style.fontWeight = 'normal';
-                
-                // Убираем анимацию
                 if (partnerCard) {
                     partnerCard.style.boxShadow = '';
-                    partnerCard.style.borderColor = '#667eea';
                 }
             }
         }
-        
-        this.partnerSpeaking = isSpeaking;
-    }
-
-    playPartnerSound(volume) {
-        // Создаем простой звуковой feedback для пользователя
-        try {
-            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            const oscillator = audioContext.createOscillator();
-            const gainNode = audioContext.createGain();
-            
-            // Настраиваем звук в зависимости от "громкости" партнера
-            oscillator.type = 'sine';
-            oscillator.frequency.value = 200 + (volume / 50) * 100; // 200-300 Hz
-            
-            gainNode.gain.value = Math.min(0.1, volume / 1000); // Очень тихий звук
-            
-            oscillator.connect(gainNode);
-            gainNode.connect(audioContext.destination);
-            
-            oscillator.start();
-            setTimeout(() => {
-                oscillator.stop();
-            }, 100);
-            
-        } catch (error) {
-            console.log('Audio feedback not supported');
-        }
-    }
-
-    playTestSound() {
-        // Тестовый звук для проверки аудио
-        try {
-            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            const oscillator = audioContext.createOscillator();
-            const gainNode = audioContext.createGain();
-            
-            oscillator.type = 'sine';
-            oscillator.frequency.value = 440; // Ля первой октавы
-            
-            gainNode.gain.value = 0.1;
-            
-            oscillator.connect(gainNode);
-            gainNode.connect(audioContext.destination);
-            
-            oscillator.start();
-            setTimeout(() => {
-                oscillator.stop();
-                this.updateStatus('🔊 Тестовый звук воспроизведен');
-            }, 500);
-            
-        } catch (error) {
-            this.updateStatus('🔇 Аудио не поддерживается в этом браузере');
-        }
-    }
-
-    async startAudioChat() {
-        this.showScreen('audioChat');
-        this.updatePartnerInfo();
-        this.updateStatus('🎤 Аудио-чат запущен! Говорите в микрофон или используйте тестовый звук');
-        
-        // Запускаем симуляцию активности партнера
-        this.startPartnerSimulation();
-    }
-
-    startPartnerSimulation() {
-        // Случайная симуляция активности партнера
-        this.simulationInterval = setInterval(() => {
-            if (Math.random() > 0.7) {
-                // Партнер "начинает говорить"
-                const volume = 30 + Math.random() * 50;
-                this.socket.emit('partner-speaking', {
-                    volume: volume,
-                    isSpeaking: true
-                });
-                
-                // "Фраза" длится 1-3 секунды
-                setTimeout(() => {
-                    if (Math.random() > 0.3) {
-                        this.socket.emit('partner-speaking', {
-                            volume: 0,
-                            isSpeaking: false
-                        });
-                    }
-                }, 1000 + Math.random() * 2000);
-            }
-        }, 3000 + Math.random() * 5000);
     }
 
     toggleAudio() {
-        if (this.audioStream) {
+        if (this.localStream) {
             this.isMuted = !this.isMuted;
-            this.audioStream.getAudioTracks()[0].enabled = !this.isMuted;
-        }
-        
-        const button = document.getElementById('muteAudio');
-        const status = document.getElementById('audioStatus');
-        
-        if (this.isMuted) {
-            button.textContent = '🔇';
-            button.className = 'control-btn muted';
-            if (status) {
-                status.textContent = '🔇 Микрофон выключен';
-                status.className = 'status-muted';
+            this.localStream.getAudioTracks()[0].enabled = !this.isMuted;
+            
+            const button = document.getElementById('muteAudio');
+            const status = document.getElementById('audioStatus');
+            
+            if (this.isMuted) {
+                button.textContent = '🔇';
+                button.className = 'control-btn muted';
+                if (status) {
+                    status.textContent = '🔇 Микрофон выключен';
+                    status.className = 'status-muted';
+                }
+                this.updateStatus('🔇 Микрофон выключен');
+            } else {
+                button.textContent = '🎤';
+                button.className = 'control-btn';
+                if (status) {
+                    status.textContent = '🔊 Аудио активно';
+                    status.className = 'status-active';
+                }
+                this.updateStatus('🎤 Микрофон включен');
             }
-            this.updateStatus('🔇 Микрофон выключен');
-        } else {
-            button.textContent = '🎤';
-            button.className = 'control-btn';
-            if (status) {
-                status.textContent = '🔊 Аудио активно';
-                status.className = 'status-active';
-            }
-            this.updateStatus('🎤 Микрофон включен');
         }
     }
 
     nextPartner() {
-        this.stopPartnerSimulation();
+        this.cleanupPeerConnection();
         this.updateStatus('🔄 Ищем нового партнера...');
         this.socket.emit('next-partner');
         this.showScreen('waitingScreen');
     }
 
     hangUp() {
-        this.stopPartnerSimulation();
-        if (this.audioStream) {
-            this.audioStream.getTracks().forEach(track => track.stop());
+        this.cleanupPeerConnection();
+        if (this.localStream) {
+            this.localStream.getTracks().forEach(track => track.stop());
         }
         if (this.audioContext) {
             this.audioContext.close();
@@ -452,13 +454,19 @@ class AudioChat {
         this.showScreen('citySelection');
         this.partnerData = null;
         this.currentCity = null;
-        this.updateStatus('📞 Чат завершен');
+        this.updateStatus('📞 Звонок завершен');
     }
 
-    stopPartnerSimulation() {
-        if (this.simulationInterval) {
-            clearInterval(this.simulationInterval);
-            this.simulationInterval = null;
+    cleanupPeerConnection() {
+        if (this.peerConnection) {
+            this.peerConnection.close();
+            this.peerConnection = null;
+        }
+        
+        // Останавливаем удаленное аудио
+        const remoteAudio = document.getElementById('remoteAudio');
+        if (remoteAudio) {
+            remoteAudio.srcObject = null;
         }
     }
 
@@ -477,7 +485,7 @@ class AudioChat {
 
     handlePartnerDisconnected() {
         this.updateStatus('❌ Партнер отключился');
-        this.stopPartnerSimulation();
+        this.cleanupPeerConnection();
         
         setTimeout(() => {
             this.nextPartner();
