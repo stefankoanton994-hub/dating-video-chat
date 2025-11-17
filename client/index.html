@@ -30,9 +30,9 @@
                 </div>
                 
                 <div class="features">
-                    <div class="feature">🎤 Голосовой чат</div>
-                    <div class="feature">💬 Текстовый чат</div>
+                    <div class="feature">🎤 Только голосовой чат</div>
                     <div class="feature">🏙️ Поиск по городам</div>
+                    <div class="feature">🔊 Реальное общение</div>
                 </div>
                 
                 <div id="formError" class="error"></div>
@@ -67,9 +67,9 @@
                     <div class="avatar">🎤</div>
                     <div class="user-name">Вы</div>
                     <div class="user-details" id="userDetails"></div>
-                    <div class="volume-indicator">
-                        <span>Громкость:</span>
-                        <span id="volumeIndicator">░░░░░</span>
+                    <div class="volume-section">
+                        <div class="volume-title">Ваша громкость:</div>
+                        <div id="volumeIndicator" class="volume-indicator">░░░░░░░░</div>
                     </div>
                 </div>
                 
@@ -85,7 +85,7 @@
                     <div class="avatar" id="partnerAvatar">👤</div>
                     <div class="user-name" id="partnerName">Партнер</div>
                     <div class="user-details" id="partnerDetails"></div>
-                    <div class="partner-status">Говорит...</div>
+                    <div class="partner-status">Слушает...</div>
                 </div>
             </div>
 
@@ -93,17 +93,6 @@
                 <button id="muteAudio" class="control-btn">🎤</button>
                 <button id="nextPartner" class="control-btn next-btn">➡️ Следующий</button>
                 <button id="hangUp" class="control-btn hangup-btn">📞 Завершить</button>
-            </div>
-
-            <div class="chat-container">
-                <div class="chat-header">💬 Текстовый чат</div>
-                <div class="chat-messages" id="chatMessages">
-                    <div class="system-message">Аудио-чат подключен. Говорите в микрофон и общайтесь в чате!</div>
-                </div>
-                <div class="chat-input">
-                    <input type="text" id="messageInput" placeholder="Введите сообщение..." maxlength="500">
-                    <button id="sendMessage">Отправить</button>
-                </div>
             </div>
 
             <div class="partner-info">

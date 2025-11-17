@@ -12,9 +12,7 @@ const io = socketIo(server, {
   }
 });
 
-// Статические файлы
 app.use(express.static(path.join(__dirname, '../client')));
-
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, '../client/index.html'));
 });
@@ -22,8 +20,7 @@ app.get('/', (req, res) => {
 const users = new Map();
 const availableCities = [
   'Москва', 'Санкт-Петербург', 'Новосибирск', 'Екатеринбург', 'Казань',
-  'Нижний Новгород', 'Челябинск', 'Самара', 'Омск', 'Ростов-на-Дону',
-  'Уфа', 'Красноярск', 'Воронеж', 'Пермь', 'Волгоград'
+  'Нижний Новгород', 'Челябинск', 'Самара', 'Омск', 'Ростов-на-Дону'
 ];
 
 io.on('connection', (socket) => {
@@ -43,7 +40,6 @@ io.on('connection', (socket) => {
 
     socket.join(city);
     
-    // Ищем партнера
     const waitingUsers = Array.from(users.values())
       .filter(user => user.city === city && user.socketId !== socket.id && !user.partnerId);
 
@@ -55,7 +51,6 @@ io.on('connection', (socket) => {
 
       console.log(`🎯 Audio match: ${socket.id} and ${partner.socketId} in ${city}`);
 
-      // Уведомляем обоих
       socket.emit('partner-found', { 
         partnerId: partner.socketId,
         partnerData: {
@@ -79,7 +74,6 @@ io.on('connection', (socket) => {
       console.log(`⏳ User ${socket.id} waiting in ${city}`);
     }
 
-    // Обновляем счетчик
     const roomUsers = Array.from(users.values()).filter(user => user.city === city);
     io.to(city).emit('users-in-room', roomUsers.length);
   });
@@ -96,17 +90,6 @@ io.on('connection', (socket) => {
       user.partnerId = null;
       
       socket.emit('waiting-for-partner');
-    }
-  });
-
-  socket.on('send-message', (data) => {
-    const user = users.get(socket.id);
-    if (user && user.partnerId) {
-      socket.to(user.partnerId).emit('new-message', {
-        text: data.text,
-        sender: user.name,
-        timestamp: new Date().toLocaleTimeString()
-      });
     }
   });
 

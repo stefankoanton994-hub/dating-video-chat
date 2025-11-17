@@ -47,10 +47,6 @@ class AudioChat {
         this.socket.on('partner-disconnected', () => {
             this.handlePartnerDisconnected();
         });
-
-        this.socket.on('new-message', (data) => {
-            this.displayMessage(data, 'partner');
-        });
     }
 
     setupEventListeners() {
@@ -61,11 +57,6 @@ class AudioChat {
         document.getElementById('muteAudio').addEventListener('click', () => this.toggleAudio());
         document.getElementById('nextPartner').addEventListener('click', () => this.nextPartner());
         document.getElementById('hangUp').addEventListener('click', () => this.hangUp());
-
-        document.getElementById('sendMessage').addEventListener('click', () => this.sendMessage());
-        document.getElementById('messageInput').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') this.sendMessage();
-        });
     }
 
     renderCities(cities) {
@@ -108,18 +99,12 @@ class AudioChat {
             this.updateStatus('✅ Микрофон подключен');
         } catch (error) {
             console.error('Audio error:', error);
-            this.showError('Не удалось подключить микрофон. Вы можете продолжить с текстовым чатом.');
-            // Все равно присоединяемся к чату
-            this.socket.emit('join-city', { 
-                city: city, 
-                userData: this.userData 
-            });
+            this.showError('Не удалось подключить микрофон. Пожалуйста, разрешите доступ к микрофону.');
         }
     }
 
     async initializeAudio() {
         try {
-            // Запрашиваем только аудио
             this.audioStream = await navigator.mediaDevices.getUserMedia({
                 audio: {
                     echoCancellation: true,
@@ -130,16 +115,13 @@ class AudioChat {
                 video: false
             });
             
-            // Создаем визуализацию звука
             this.createAudioVisualizer();
-            
             console.log('🎤 Microphone access granted');
             return true;
             
         } catch (error) {
             console.error('🎤 Microphone access denied:', error);
-            this.updateStatus('🔇 Микрофон недоступен (только текстовый чат)');
-            return false;
+            throw error;
         }
     }
 
@@ -156,13 +138,10 @@ class AudioChat {
             const bufferLength = this.analyser.frequencyBinCount;
             const dataArray = new Uint8Array(bufferLength);
             
-            // Функция для анимации визуализатора
             const drawVisualizer = () => {
                 if (!this.analyser) return;
                 
                 this.analyser.getByteFrequencyData(dataArray);
-                
-                // Обновляем индикатор громкости
                 const volume = dataArray.reduce((a, b) => a + b) / bufferLength;
                 this.updateVolumeIndicator(volume);
                 
@@ -180,8 +159,8 @@ class AudioChat {
     updateVolumeIndicator(volume) {
         const indicator = document.getElementById('volumeIndicator');
         if (indicator) {
-            const bars = 5;
-            const activeBars = Math.min(bars, Math.ceil(volume / 20));
+            const bars = 8;
+            const activeBars = Math.min(bars, Math.ceil(volume / 15));
             let indicatorHTML = '';
             
             for (let i = 0; i < bars; i++) {
@@ -193,32 +172,22 @@ class AudioChat {
             }
             
             indicator.textContent = indicatorHTML;
+            
+            // Меняем цвет индикатора в зависимости от громкости
+            if (volume > 50) {
+                indicator.style.color = '#4CAF50';
+            } else if (volume > 20) {
+                indicator.style.color = '#FF9800';
+            } else {
+                indicator.style.color = '#f44336';
+            }
         }
     }
 
     async startAudioChat() {
         this.showScreen('audioChat');
         this.updatePartnerInfo();
-        
-        this.displayMessage({
-            text: `Вы connected с ${this.partnerData.partnerData.name}. Начинайте общение!`,
-            sender: 'Система',
-            timestamp: new Date().toLocaleTimeString()
-        }, 'system-message');
-        
         this.updateStatus('🎤 Аудио-чат запущен. Говорите!');
-        
-        // Запускаем индикатор звука
-        this.startAudioMonitoring();
-    }
-
-    startAudioMonitoring() {
-        // Индикатор что аудио работает
-        const audioStatus = document.getElementById('audioStatus');
-        if (audioStatus) {
-            audioStatus.textContent = '🔊 Аудио активно';
-            audioStatus.className = 'status-active';
-        }
     }
 
     toggleAudio() {
@@ -255,7 +224,6 @@ class AudioChat {
         this.updateStatus('🔄 Ищем нового партнера...');
         this.socket.emit('next-partner');
         this.showScreen('waitingScreen');
-        this.clearChat();
     }
 
     hangUp() {
@@ -266,43 +234,9 @@ class AudioChat {
             this.audioContext.close();
         }
         this.showScreen('citySelection');
-        this.clearChat();
         this.partnerData = null;
         this.currentCity = null;
         this.updateStatus('📞 Звонок завершен');
-    }
-
-    sendMessage() {
-        const input = document.getElementById('messageInput');
-        const text = input.value.trim();
-        
-        if (text && this.partnerData) {
-            this.socket.emit('send-message', { text });
-            this.displayMessage({
-                text: text,
-                sender: this.userData.name,
-                timestamp: new Date().toLocaleTimeString()
-            }, 'own');
-            input.value = '';
-        }
-    }
-
-    displayMessage(data, type) {
-        const messagesContainer = document.getElementById('chatMessages');
-        const messageDiv = document.createElement('div');
-        messageDiv.className = `message ${type}`;
-        messageDiv.innerHTML = `
-            <div class="message-sender">${data.sender}</div>
-            <div class="message-text">${data.text}</div>
-            <div class="message-time">${data.timestamp}</div>
-        `;
-        messagesContainer.appendChild(messageDiv);
-        messagesContainer.scrollTop = messagesContainer.scrollHeight;
-    }
-
-    clearChat() {
-        document.getElementById('chatMessages').innerHTML = 
-            '<div class="system-message">Аудио-чат подключен. Говорите в микрофон и общайтесь в чате!</div>';
     }
 
     updatePartnerInfo() {
@@ -311,7 +245,6 @@ class AudioChat {
             document.getElementById('partnerInfo').textContent = info;
             document.getElementById('partnerName').textContent = this.partnerData.partnerData.name;
             
-            // Устанавливаем аватарку по полу
             const partnerAvatar = document.getElementById('partnerAvatar');
             if (partnerAvatar) {
                 partnerAvatar.textContent = this.partnerData.partnerData.gender === 'female' ? '👩' : '👨';
@@ -320,12 +253,6 @@ class AudioChat {
     }
 
     handlePartnerDisconnected() {
-        this.displayMessage({
-            text: 'Партнер отключился. Ищем нового...',
-            sender: 'Система',
-            timestamp: new Date().toLocaleTimeString()
-        }, 'system-message');
-        
         this.updateStatus('❌ Партнер отключился');
         
         setTimeout(() => {
