@@ -78,6 +78,17 @@ io.on('connection', (socket) => {
     io.to(city).emit('users-in-room', roomUsers.length);
   });
 
+  // Симуляция активности говорящего
+  socket.on('user-speaking', (data) => {
+    const user = users.get(socket.id);
+    if (user && user.partnerId) {
+      socket.to(user.partnerId).emit('partner-speaking', {
+        volume: data.volume,
+        isSpeaking: data.isSpeaking
+      });
+    }
+  });
+
   socket.on('next-partner', () => {
     const user = users.get(socket.id);
     if (user && user.partnerId) {

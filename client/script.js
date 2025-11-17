@@ -8,6 +8,7 @@ class AudioChat {
         this.isMuted = false;
         this.audioContext = null;
         this.analyser = null;
+        this.isSpeaking = false;
         
         this.initializeApp();
     }
@@ -42,6 +43,10 @@ class AudioChat {
 
         this.socket.on('users-in-room', (count) => {
             document.getElementById('usersCount').textContent = count;
+        });
+
+        this.socket.on('partner-speaking', (data) => {
+            this.updatePartnerSpeaking(data.volume, data.isSpeaking);
         });
 
         this.socket.on('partner-disconnected', () => {
@@ -99,7 +104,12 @@ class AudioChat {
             this.updateStatus('✅ Микрофон подключен');
         } catch (error) {
             console.error('Audio error:', error);
-            this.showError('Не удалось подключить микрофон. Пожалуйста, разрешите доступ к микрофону.');
+            // Даже если микрофон не доступен, продолжаем
+            this.socket.emit('join-city', { 
+                city: city, 
+                userData: this.userData 
+            });
+            this.updateStatus('🎤 Чат подключен (микрофон не доступен)');
         }
     }
 
@@ -121,7 +131,9 @@ class AudioChat {
             
         } catch (error) {
             console.error('🎤 Microphone access denied:', error);
-            throw error;
+            // Создаем фейковый визуализатор для демонстрации
+            this.createFakeVisualizer();
+            return false;
         }
     }
 
@@ -143,7 +155,24 @@ class AudioChat {
                 
                 this.analyser.getByteFrequencyData(dataArray);
                 const volume = dataArray.reduce((a, b) => a + b) / bufferLength;
-                this.updateVolumeIndicator(volume);
+                
+                // Обновляем индикатор громкости
+                this.updateVolumeIndicator(volume, 'local');
+                
+                // Отправляем данные о активности на сервер
+                if (volume > 20 && !this.isMuted) {
+                    this.isSpeaking = true;
+                    this.socket.emit('user-speaking', { 
+                        volume: volume, 
+                        isSpeaking: true 
+                    });
+                } else {
+                    this.isSpeaking = false;
+                    this.socket.emit('user-speaking', { 
+                        volume: 0, 
+                        isSpeaking: false 
+                    });
+                }
                 
                 requestAnimationFrame(drawVisualizer);
             };
@@ -153,14 +182,45 @@ class AudioChat {
             
         } catch (error) {
             console.error('Visualizer error:', error);
+            this.createFakeVisualizer();
         }
     }
 
-    updateVolumeIndicator(volume) {
+    createFakeVisualizer() {
+        // Фейковый визуализатор для демонстрации
+        let fakeVolume = 0;
+        const drawFakeVisualizer = () => {
+            // Случайные колебания громкости для демонстрации
+            fakeVolume = Math.max(0, fakeVolume + (Math.random() - 0.5) * 10);
+            fakeVolume = Math.min(50, fakeVolume);
+            
+            this.updateVolumeIndicator(fakeVolume, 'local');
+            
+            // Имитация речи
+            if (Math.random() > 0.7 && !this.isMuted) {
+                this.socket.emit('user-speaking', { 
+                    volume: fakeVolume, 
+                    isSpeaking: true 
+                });
+            } else {
+                this.socket.emit('user-speaking', { 
+                    volume: 0, 
+                    isSpeaking: false 
+                });
+            }
+            
+            requestAnimationFrame(drawFakeVisualizer);
+        };
+        
+        drawFakeVisualizer();
+        console.log('📊 Fake audio visualizer created');
+    }
+
+    updateVolumeIndicator(volume, type) {
         const indicator = document.getElementById('volumeIndicator');
         if (indicator) {
             const bars = 8;
-            const activeBars = Math.min(bars, Math.ceil(volume / 15));
+            const activeBars = Math.min(bars, Math.ceil(volume / (type === 'local' ? 15 : 12)));
             let indicatorHTML = '';
             
             for (let i = 0; i < bars; i++) {
@@ -173,8 +233,7 @@ class AudioChat {
             
             indicator.textContent = indicatorHTML;
             
-            // Меняем цвет индикатора в зависимости от громкости
-            if (volume > 50) {
+            if (volume > 40) {
                 indicator.style.color = '#4CAF50';
             } else if (volume > 20) {
                 indicator.style.color = '#FF9800';
@@ -184,39 +243,76 @@ class AudioChat {
         }
     }
 
+    updatePartnerSpeaking(volume, isSpeaking) {
+        const partnerIndicator = document.getElementById('partnerVolumeIndicator');
+        const partnerStatus = document.querySelector('.partner-status');
+        
+        if (partnerIndicator) {
+            const bars = 8;
+            const activeBars = Math.min(bars, Math.ceil(volume / 12));
+            let indicatorHTML = '';
+            
+            for (let i = 0; i < bars; i++) {
+                if (i < activeBars) {
+                    indicatorHTML += '█';
+                } else {
+                    indicatorHTML += '░';
+                }
+            }
+            
+            partnerIndicator.textContent = indicatorHTML;
+            
+            if (volume > 30) {
+                partnerIndicator.style.color = '#4CAF50';
+            } else if (volume > 15) {
+                partnerIndicator.style.color = '#FF9800';
+            } else {
+                partnerIndicator.style.color = '#f44336';
+            }
+        }
+        
+        if (partnerStatus) {
+            if (isSpeaking && volume > 15) {
+                partnerStatus.textContent = '🔊 Говорит';
+                partnerStatus.style.color = '#4CAF50';
+            } else {
+                partnerStatus.textContent = '🎤 Слушает';
+                partnerStatus.style.color = '#667eea';
+            }
+        }
+    }
+
     async startAudioChat() {
         this.showScreen('audioChat');
         this.updatePartnerInfo();
-        this.updateStatus('🎤 Аудио-чат запущен. Говорите!');
+        this.updateStatus('🎤 Аудио-чат запущен. Говорите в микрофон!');
     }
 
     toggleAudio() {
         if (this.audioStream) {
             this.isMuted = !this.isMuted;
             this.audioStream.getAudioTracks()[0].enabled = !this.isMuted;
-            
-            const button = document.getElementById('muteAudio');
-            const status = document.getElementById('audioStatus');
-            
-            if (this.isMuted) {
-                button.textContent = '🔇';
-                button.className = 'control-btn muted';
-                if (status) {
-                    status.textContent = '🔇 Микрофон выключен';
-                    status.className = 'status-muted';
-                }
-                this.updateStatus('🔇 Микрофон выключен');
-            } else {
-                button.textContent = '🎤';
-                button.className = 'control-btn';
-                if (status) {
-                    status.textContent = '🔊 Аудио активно';
-                    status.className = 'status-active';
-                }
-                this.updateStatus('🎤 Микрофон включен');
+        }
+        
+        const button = document.getElementById('muteAudio');
+        const status = document.getElementById('audioStatus');
+        
+        if (this.isMuted) {
+            button.textContent = '🔇';
+            button.className = 'control-btn muted';
+            if (status) {
+                status.textContent = '🔇 Микрофон выключен';
+                status.className = 'status-muted';
             }
+            this.updateStatus('🔇 Микрофон выключен');
         } else {
-            this.updateStatus('🎤 Микрофон недоступен');
+            button.textContent = '🎤';
+            button.className = 'control-btn';
+            if (status) {
+                status.textContent = '🔊 Аудио активно';
+                status.className = 'status-active';
+            }
+            this.updateStatus('🎤 Микрофон включен');
         }
     }
 
@@ -236,7 +332,7 @@ class AudioChat {
         this.showScreen('citySelection');
         this.partnerData = null;
         this.currentCity = null;
-        this.updateStatus('📞 Звонок завершен');
+        this.updateStatus('📞 Чат завершен');
     }
 
     updatePartnerInfo() {
